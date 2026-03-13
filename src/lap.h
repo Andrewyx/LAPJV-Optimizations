@@ -30,6 +30,13 @@ typedef int row;
 typedef int col;
 typedef double cost;
 
+struct MatrixPosition
+{
+    row i;
+    col j;
+};
+
+
 template <typename Data>
 class LAPJV
 {
@@ -45,23 +52,21 @@ public:
         // LAPJV requires a square matrix. Pad to the largest dimension.
         int dim = std::max(original_rows, original_cols);
 
+
         // Helper lambda to seamlessly provide 0-cost padding for out-of-bounds access
-        auto cost_at = [&](int r, int c) -> Data
-        {
-            if (r < original_rows && c < original_cols)
-            {
-                return m(r, c);
-            }
-            return 0; // 0 cost ensures "dummy" assignments don't penalize the real assignments
+        auto cost_at = [&](int r, int c) -> Data {
+            // 0 cost ensures "dummy" assignments don't penalize the real assignments
+            return r < original_rows && c < original_cols ? m(r, c) : 0;
         };
 
         bool unassignedfound;
-        row i, imin, numfree = 0, prvnumfree, f, i0, k, freerow, *pred, *freeunassigned;
-        col j, j1, j2, endofpath, last, low, up, *collist, *matches;
+
+        row numfree = 0, prvnumfree, f, i0, k, freerow, *pred, *freeunassigned;
+        col j1, j2, endofpath, last, low, up, *collist, *matches;
         cost min, h, umin, usubmin, v2, *d;
 
-        col* rowsol = new col[dim];
-        row* colsol = new row[dim];
+        col* row_solutions = new col[dim];
+        row* col_solutions = new row[dim];
         cost* u = new cost[dim];
         cost* v = new cost[dim];
 
@@ -71,48 +76,61 @@ public:
         d = new cost[dim];
         pred = new row[dim];
 
-        for (i = 0; i < dim; i++) matches[i] = 0;
+        MatrixPosition pos_;
+        for (pos_.i = 0; pos_.i < dim; pos_.i++) matches[pos_.i] = 0;
 
-        // COLUMN REDUCTION
-        for (j = dim; j--;)
-        {
-            min = cost_at(0, j);
-            imin = 0;
-            for (i = 1; i < dim; i++)
-                if (cost_at(i, j) < min)
+        auto column_reduction = [&]() -> cost {
+            row imin = 0;
+            cost min = 0;
+            // COLUMN REDUCTION
+            for (pos_.j = dim; pos_.j--;)
+            {
+                min = cost_at(0, pos_.j);
+                imin = 0;
+                for (pos_.i = 1; pos_.i < dim; pos_.i++)
                 {
-                    min = cost_at(i, j);
-                    imin = i;
+                    if (cost_at(pos_.i, pos_.j) < min)
+                    {
+                        min = cost_at(pos_.i, pos_.j);
+                        imin = pos_.i;
+                    }
                 }
-            v[j] = min;
-            if (++matches[imin] == 1)
-            {
-                rowsol[imin] = j;
-                colsol[j] = imin;
-            }
-            else if (v[j] < v[rowsol[imin]])
-            {
-                int j1 = rowsol[imin];
-                rowsol[imin] = j;
-                colsol[j] = imin;
-                colsol[j1] = -1;
-            }
-            else
-                colsol[j] = -1;
-        }
+                v[pos_.j] = min;
 
+                if (++matches[imin] == 1)
+                {
+                    row_solutions[imin] = pos_.j;
+                    col_solutions[pos_.j] = imin;
+                }
+                else if (v[pos_.j] < v[row_solutions[imin]])
+                {
+                    int j1 = row_solutions[imin];
+                    row_solutions[imin] = pos_.j;
+                    col_solutions[pos_.j] = imin;
+                    col_solutions[j1] = -1;
+                }
+                else
+                {
+                    col_solutions[pos_.j] = -1;
+                }
+            }
+            return min;
+        };
+
+
+        min = column_reduction();
         // REDUCTION TRANSFER
-        for (i = 0; i < dim; i++)
+        for (pos_.i = 0; pos_.i < dim; pos_.i++)
         {
-            if (matches[i] == 0)
-                freeunassigned[numfree++] = i;
-            else if (matches[i] == 1)
+            if (matches[pos_.i] == 0)
+                freeunassigned[numfree++] = pos_.i;
+            else if (matches[pos_.i] == 1)
             {
-                j1 = rowsol[i];
+                j1 = row_solutions[pos_.i];
                 min = BIG;
-                for (j = 0; j < dim; j++)
-                    if (j != j1)
-                        if (cost_at(i, j) - v[j] < min) min = cost_at(i, j) - v[j];
+                for (pos_.j = 0; pos_.j < dim; pos_.j++)
+                    if (pos_.j != j1)
+                        if (cost_at(pos_.i, pos_.j) - v[pos_.j] < min) min = cost_at(pos_.i, pos_.j) - v[pos_.j];
                 v[j1] = v[j1] - min;
             }
         }
@@ -128,41 +146,41 @@ public:
             numfree = 0;
             while (k < prvnumfree)
             {
-                i = freeunassigned[k];
+                pos_.i = freeunassigned[k];
                 k++;
 
-                umin = cost_at(i, 0) - v[0];
+                umin = cost_at(pos_.i, 0) - v[0];
                 j1 = 0;
                 usubmin = BIG;
-                for (j = 1; j < dim; j++)
+                for (pos_.j = 1; pos_.j < dim; pos_.j++)
                 {
-                    h = cost_at(i, j) - v[j];
+                    h = cost_at(pos_.i, pos_.j) - v[pos_.j];
                     if (h < usubmin)
                         if (h >= umin)
                         {
                             usubmin = h;
-                            j2 = j;
+                            j2 = pos_.j;
                         }
                         else
                         {
                             usubmin = umin;
                             umin = h;
                             j2 = j1;
-                            j1 = j;
+                            j1 = pos_.j;
                         }
                 }
 
-                i0 = colsol[j1];
+                i0 = col_solutions[j1];
                 if (usubmin - umin > EPSILON)
                     v[j1] = v[j1] - (usubmin - umin);
                 else if (i0 > -1)
                 {
                     j1 = j2;
-                    i0 = colsol[j2];
+                    i0 = col_solutions[j2];
                 }
 
-                rowsol[i] = j1;
-                colsol[j1] = i;
+                row_solutions[pos_.i] = j1;
+                col_solutions[j1] = pos_.i;
 
                 if (i0 > -1)
                     if (usubmin - umin > EPSILON)
@@ -178,11 +196,11 @@ public:
         {
             freerow = freeunassigned[f];
 
-            for (j = dim; j--;)
+            for (pos_.j = dim; pos_.j--;)
             {
-                d[j] = cost_at(freerow, j) - v[j];
-                pred[j] = freerow;
-                collist[j] = j;
+                d[pos_.j] = cost_at(freerow, pos_.j) - v[pos_.j];
+                pred[pos_.j] = freerow;
+                collist[pos_.j] = pos_.j;
             }
 
             low = 0;
@@ -197,8 +215,8 @@ public:
                     min = d[collist[up++]];
                     for (k = up; k < dim; k++)
                     {
-                        j = collist[k];
-                        h = d[j];
+                        pos_.j = collist[k];
+                        h = d[pos_.j];
                         if (h <= min + EPSILON)
                         {
                             if (h < min - EPSILON)
@@ -207,11 +225,11 @@ public:
                                 min = h;
                             }
                             collist[k] = collist[up];
-                            collist[up++] = j;
+                            collist[up++] = pos_.j;
                         }
                     }
                     for (k = low; k < up; k++)
-                        if (colsol[collist[k]] < 0)
+                        if (col_solutions[collist[k]] < 0)
                         {
                             endofpath = collist[k];
                             unassignedfound = true;
@@ -223,29 +241,29 @@ public:
                 {
                     j1 = collist[low];
                     low++;
-                    i = colsol[j1];
-                    h = cost_at(i, j1) - v[j1] - min;
+                    pos_.i = col_solutions[j1];
+                    h = cost_at(pos_.i, j1) - v[j1] - min;
 
                     for (k = up; k < dim; k++)
                     {
-                        j = collist[k];
-                        v2 = cost_at(i, j) - v[j] - h;
-                        if (v2 < d[j])
+                        pos_.j = collist[k];
+                        v2 = cost_at(pos_.i, pos_.j) - v[pos_.j] - h;
+                        if (v2 < d[pos_.j])
                         {
-                            pred[j] = i;
+                            pred[pos_.j] = pos_.i;
                             if (std::abs(v2 - min) <= EPSILON)
-                                if (colsol[j] < 0)
+                                if (col_solutions[pos_.j] < 0)
                                 {
-                                    endofpath = j;
+                                    endofpath = pos_.j;
                                     unassignedfound = true;
                                     break;
                                 }
                                 else
                                 {
                                     collist[k] = collist[up];
-                                    collist[up++] = j;
+                                    collist[up++] = pos_.j;
                                 }
-                            d[j] = v2;
+                            d[pos_.j] = v2;
                         }
                     }
                 }
@@ -260,22 +278,22 @@ public:
 
             do
             {
-                i = pred[endofpath];
-                colsol[endofpath] = i;
+                pos_.i = pred[endofpath];
+                col_solutions[endofpath] = pos_.i;
                 j1 = endofpath;
-                endofpath = rowsol[i];
-                rowsol[i] = j1;
+                endofpath = row_solutions[pos_.i];
+                row_solutions[pos_.i] = j1;
             }
-            while (i != freerow);
+            while (pos_.i != freerow);
         }
 
         // calculate optimal cost.
         cost lapcost = 0;
-        for (i = dim; i--;)
+        for (pos_.i = dim; pos_.i--;)
         {
-            j = rowsol[i];
-            u[i] = cost_at(i, j) - v[j];
-            lapcost = lapcost + cost_at(i, j);
+            pos_.j = row_solutions[pos_.i];
+            u[pos_.i] = cost_at(pos_.i, pos_.j) - v[pos_.j];
+            lapcost = lapcost + cost_at(pos_.i, pos_.j);
         }
 
         // Write assignments back into the input matrix
@@ -283,7 +301,7 @@ public:
         {
             for (size_t c = 0; c < m.columns(); ++c)
             {
-                if (rowsol[r] == (col)c)
+                if (row_solutions[r] == (col)c)
                 {
                     m(r, c) = 0.0;
                 }
@@ -301,8 +319,8 @@ public:
         delete[] matches;
         delete[] d;
 
-        delete[] rowsol;
-        delete[] colsol;
+        delete[] row_solutions;
+        delete[] col_solutions;
         delete[] u;
         delete[] v;
     };

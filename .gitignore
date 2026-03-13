@@ -1,6 +1,8 @@
 # Reports & Data
 reports/*
 results.json
+perf.data
+flamegraph.svg
 
 # Virtual environment
 .venv/
