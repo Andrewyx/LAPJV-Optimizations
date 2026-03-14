@@ -48,7 +48,7 @@ Matrix<T>::Matrix(const std::initializer_list<std::initializer_list<T>> init) {
     assert ( row->size() == m_columns && "All rows must have the same number of columns." );
     j = 0;
     for ( auto value = row->begin() ; value != row->end() ; ++value, ++j ) {
-      m_matrix[i][j] = *value;
+      m_matrix[i * m_columns + j] = *value;
     }
   }
 }
@@ -59,10 +59,8 @@ Matrix<T>::Matrix(const Matrix<T> &other) {
     // copy arrays
     m_matrix = nullptr;
     resize(other.m_rows, other.m_columns);
-    for ( size_t i = 0 ; i < m_rows ; i++ ) {
-      for ( size_t j = 0 ; j < m_columns ; j++ ) {
-        m_matrix[i][j] = other.m_matrix[i][j];
-      }
+    for ( size_t i = 0 ; i < m_rows * m_columns ; i++ ) {
+        m_matrix[i] = other.m_matrix[i];
     }
   } else {
     m_matrix = nullptr;
@@ -83,17 +81,11 @@ Matrix<T>::operator= (const Matrix<T> &other) {
   if ( other.m_matrix != nullptr ) {
     // copy arrays
     resize(other.m_rows, other.m_columns);
-    for ( size_t i = 0 ; i < m_rows ; i++ ) {
-      for ( size_t j = 0 ; j < m_columns ; j++ ) {
-          m_matrix[i][j] = other.m_matrix[i][j];
-      }
+    for ( size_t i = 0 ; i < m_rows * m_columns ; i++ ) {
+        m_matrix[i] = other.m_matrix[i];
     }
   } else {
     // free arrays
-    for ( size_t i = 0 ; i < m_columns ; i++ ) {
-      delete [] m_matrix[i];
-    }
-
     delete [] m_matrix;
 
     m_matrix = nullptr;
@@ -108,10 +100,6 @@ Matrix<T>::operator= (const Matrix<T> &other) {
 Matrix<T>::~Matrix() {
   if ( m_matrix != nullptr ) {
     // free arrays
-    for ( size_t i = 0 ; i < m_rows ; i++ ) {
-      delete [] m_matrix[i];
-    }
-
     delete [] m_matrix;
   }
   m_matrix = nullptr;
@@ -124,24 +112,17 @@ Matrix<T>::resize(const size_t rows, const size_t columns, const T default_value
 
   if ( m_matrix == nullptr ) {
     // alloc arrays
-    m_matrix = new T*[rows]; // rows
-    for ( size_t i = 0 ; i < rows ; i++ ) {
-      m_matrix[i] = new T[columns]; // columns
-    }
-
+    m_matrix = new T[rows * columns];
     m_rows = rows;
     m_columns = columns;
     clear();
   } else {
     // save array pointer
-    T **new_matrix;
+    T *new_matrix;
     // alloc new arrays
-    new_matrix = new T*[rows]; // rows
-    for ( size_t i = 0 ; i < rows ; i++ ) {
-      new_matrix[i] = new T[columns]; // columns
-      for ( size_t j = 0 ; j < columns ; j++ ) {
-        new_matrix[i][j] = default_value;
-      }
+    new_matrix = new T[rows * columns];
+    for ( size_t i = 0 ; i < rows * columns ; i++ ) {
+        new_matrix[i] = default_value;
     }
 
     // copy data from saved pointer to new arrays
@@ -149,16 +130,12 @@ Matrix<T>::resize(const size_t rows, const size_t columns, const T default_value
     size_t mincols = std::min(columns, m_columns);
     for ( size_t x = 0 ; x < minrows ; x++ ) {
       for ( size_t y = 0 ; y < mincols ; y++ ) {
-        new_matrix[x][y] = m_matrix[x][y];
+        new_matrix[x * columns + y] = m_matrix[x * m_columns + y];
       }
     }
 
     // delete old arrays
     if ( m_matrix != nullptr ) {
-      for ( size_t i = 0 ; i < m_rows ; i++ ) {
-        delete [] m_matrix[i];
-      }
-
       delete [] m_matrix;
     }
 
@@ -174,10 +151,8 @@ void
 Matrix<T>::clear() {
   assert( m_matrix != nullptr );
 
-  for ( size_t i = 0 ; i < m_rows ; i++ ) {
-    for ( size_t j = 0 ; j < m_columns ; j++ ) {
-      m_matrix[i][j] = 0;
-    }
+  for ( size_t i = 0 ; i < m_rows * m_columns ; i++ ) {
+      m_matrix[i] = 0;
   }
 }
 
@@ -187,7 +162,7 @@ Matrix<T>::operator ()(const size_t x, const size_t y) {
   assert ( x < m_rows );
   assert ( y < m_columns );
   assert ( m_matrix != nullptr );
-  return m_matrix[x][y];
+  return m_matrix[x * m_columns + y];
 }
 
 
@@ -197,7 +172,7 @@ Matrix<T>::operator ()(const size_t x, const size_t y) const {
   assert ( x < m_rows );
   assert ( y < m_columns );
   assert ( m_matrix != nullptr );
-  return m_matrix[x][y];
+  return m_matrix[x * m_columns + y];
 }
 
 
@@ -207,15 +182,13 @@ Matrix<T>::min() const {
   assert( m_matrix != nullptr );
   assert ( m_rows > 0 );
   assert ( m_columns > 0 );
-  T min = m_matrix[0][0];
+  T min_val = m_matrix[0];
 
-  for ( size_t i = 0 ; i < m_rows ; i++ ) {
-    for ( size_t j = 0 ; j < m_columns ; j++ ) {
-      min = std::min<T>(min, m_matrix[i][j]);
-    }
+  for ( size_t i = 0 ; i < m_rows * m_columns ; i++ ) {
+      min_val = std::min<T>(min_val, m_matrix[i]);
   }
 
-  return min;
+  return min_val;
 }
 
 
@@ -225,13 +198,11 @@ Matrix<T>::max() const {
   assert( m_matrix != nullptr );
   assert ( m_rows > 0 );
   assert ( m_columns > 0 );
-  T max = m_matrix[0][0];
+  T max_val = m_matrix[0];
 
-  for ( size_t i = 0 ; i < m_rows ; i++ ) {
-    for ( size_t j = 0 ; j < m_columns ; j++ ) {
-      max = std::max<T>(max, m_matrix[i][j]);
-    }
+  for ( size_t i = 0 ; i < m_rows * m_columns ; i++ ) {
+      max_val = std::max<T>(max_val, m_matrix[i]);
   }
 
-  return max;
+  return max_val;
 }

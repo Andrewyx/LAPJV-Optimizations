@@ -13,18 +13,20 @@ cc_test(
 cc_binary(
     name = "lapbench",
     srcs = ["lapbench.cpp"],
-    deps = [
-        "//src:lapjv",
-        "@google_benchmark//:benchmark"
-    ],
     copts = [
         "-O3",
         "-march=native",
         "-DNDEBUG",
         "-flto",
-    ]
+        "-fopenmp-simd",
+    ],
+    linkopts = ["-static"],
+    linkstatic = True,
+    deps = [
+        "//src:lapjv",
+        "@google_benchmark//:benchmark",
+    ],
 )
-
 
 py_binary(
     name = "compare_benchmarks",

@@ -59,7 +59,7 @@ public:
   }
 
 private:
-  T **m_matrix;
+  T *m_matrix;
   size_t m_rows;
   size_t m_columns;
 };

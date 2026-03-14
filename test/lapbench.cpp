@@ -51,7 +51,7 @@ BENCHMARK_MAIN();
 
 /*
 Please use the following command to run the benchmark with optimizations and report output
- bazel build -c opt --copt="-O3" --copt="-march=native" --copt="-ffast-math" --copt="-flto" --linkopt="-flto" //test:lapbench
+ bazel build -c opt --copt="-O3" --copt="-march=native" --copt="-ffast-math" --copt="-fopenmp-simd" --copt="-flto" --linkopt="-flto" //test:lapbench
  ./bazel-bin/test/lapbench --benchmark_format=console --benchmark_out=results.json --benchmark_out_format=json
 
   The report json file could be found in results.json

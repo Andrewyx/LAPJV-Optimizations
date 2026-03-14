@@ -70,24 +70,37 @@ public:
         std::vector<row> predecessor_rows(dim, 0);
 
         auto column_reduction = [&]() -> cost {
-            row min_row = 0;
-            cost current_min_cost = 0;
-            
+            std::vector<row> min_rows(dim, 0);
+
             // STEP 1: COLUMN REDUCTION
-            // For each column, find the minimum cost and subtract it from all elements in the column.
-            for (col j = dim; j--;)
+            // Initialize with the first row's costs
+            for (col j = 0; j < dim; j++)
             {
-                current_min_cost = cost_at(0, j);
-                min_row = 0;
-                for (row i = 1; i < dim; i++)
+                dual_v[j] = cost_at(0, j);
+            }
+
+            // Row-major access for cache-friendly matrix reads
+            for (row i = 1; i < dim; i++)
+            {
+                #pragma omp simd
+                for (col j = 0; j < dim; j++)
                 {
-                    if (cost_at(i, j) < current_min_cost)
+                    cost c = cost_at(i, j);
+                    if (c < dual_v[j])
                     {
-                        current_min_cost = cost_at(i, j);
-                        min_row = i;
+                        dual_v[j] = c;
+                        min_rows[j] = i;
                     }
                 }
-                dual_v[j] = current_min_cost;
+            }
+
+            cost current_min_cost = 0;
+
+            // Assign columns backwards to match original LAPJV behavior
+            for (col j = dim; j--;)
+            {
+                row min_row = min_rows[j];
+                current_min_cost = dual_v[j];
 
                 // Track the number of times a row contains the minimum of a column
                 if (++col_match_counts[min_row] == 1)
@@ -226,7 +239,7 @@ public:
             row current_free_row = unassigned_rows[f];
 
             // Initialize shortest path costs
-            for (col j = dim; j--;)
+            for (col j = 0; j < dim; j++)
             {
                 shortest_path_costs[j] = cost_at(current_free_row, j) - dual_v[j];
                 predecessor_rows[j] = current_free_row;
@@ -330,7 +343,7 @@ public:
 
         // STEP 5: CALCULATE OPTIMAL COST & FINALIZE
         cost lapcost = 0;
-        for (row i = dim; i--;)
+        for (row i = 0; i < dim; i++)
         {
             col j = row_assignment[i];
             dual_u[i] = cost_at(i, j) - dual_v[j];
