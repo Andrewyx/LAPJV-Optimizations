@@ -1,4 +1,5 @@
 common --enable_bzlmod
 build --cxxopt="-std=c++20"
 build:max -c opt --copt="-O3" --copt="-march=native" --copt="-ffast-math" --copt="-fopenmp-simd" --copt="-flto" --linkopt="-flto"
-build:dbg --config=max --copt="-g"
+build:dbg --copt="-g"
+build:dbgm --config=max --config=dbg

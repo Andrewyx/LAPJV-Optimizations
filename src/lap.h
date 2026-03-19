@@ -19,10 +19,11 @@
 
 #if !defined(_LAPJV_H_)
 #define _LAPJV_H_
+// #define DEBUG
 
 #include "matrix.h"
-#include <algorithm> // Needed for std::max
-#include <cmath>     // Needed for std::abs
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 /*************** TYPES      *******************/
@@ -34,155 +35,170 @@ template <typename Data>
 class LAPJV
 {
 public:
-    static constexpr Data EPSILON = std::is_integral_v<Data> ?
-                                        static_cast<Data>(0) :
-                                        std::numeric_limits<Data>::epsilon() * static_cast<Data>(100);
-    static constexpr double BIG = std::numeric_limits<Data>::max();
+    static constexpr Data EPSILON = std::is_integral_v<Data>
+                                        ? static_cast<Data>(0)
+                                        : std::numeric_limits<Data>::epsilon() * static_cast<Data>(100);
+    static constexpr Data BIG = std::numeric_limits<Data>::max();
     typedef Data cost;
+
     void solve(Matrix<Data>& m)
     {
-        // INITIALIZATION
         int original_rows = m.rows();
         int original_cols = m.columns();
-        // LAPJV requires a square matrix. Pad to the largest dimension.
         int dim = std::max(original_rows, original_cols);
 
-        // Helper lambda to seamlessly provide 0-cost padding for out-of-bounds access
-        auto cost_at = [&](int r, int c) -> Data {
-            // 0 cost ensures "dummy" assignments don't penalize the real assignments
-            return r < original_rows && c < original_cols ? m(r, c) : 0;
-        };
+        Context ctx(dim, original_rows, original_cols);
 
-        // row_assignment[i] = column assigned to row i
-        std::vector<col> row_assignment(dim, 0);
-        // col_assignment[j] = row assigned to column j, or -1 if unassigned
-        std::vector<row> col_assignment(dim, 0);
-        
-        // Dual variables for rows (u) and columns (v)
-        std::vector<cost> dual_u(dim, 0);
-        std::vector<cost> dual_v(dim, 0);
+        step1_column_reduction(m, ctx);
+        step2_reduction_transfer(m, ctx);
+        step3_augmenting_row_reduction(m, ctx);
+        step4_augment_solution(m, ctx);
+        step5_calculate_optimal_cost_and_finalize(m, ctx);
+    }
 
-        std::vector<row> unassigned_rows(dim, 0);
-        
-        // Structures used for shortest path calculations (Dijkstra)
-        std::vector<col> path_cols(dim, 0);
-        std::vector<col> col_match_counts(dim, 0);
-        std::vector<cost> shortest_path_costs(dim, 0);
-        std::vector<row> predecessor_rows(dim, 0);
+private:
+    struct Context
+    {
+        int dim;
+        int original_rows;
+        int original_cols;
+        std::vector<col> row_assignment;
+        std::vector<row> col_assignment;
+        std::vector<cost> dual_u;
+        std::vector<cost> dual_v;
+        std::vector<row> unassigned_rows;
+        std::vector<col> path_cols;
+        std::vector<col> col_match_counts;
+        std::vector<cost> shortest_path_costs;
+        std::vector<row> predecessor_rows;
+        cost min_reduced_cost;
+        row num_unassigned_rows;
 
-        auto column_reduction = [&]() -> cost {
-            std::vector<row> min_rows(dim, 0);
-
-            // STEP 1: COLUMN REDUCTION
-            // Initialize with the first row's costs
-            for (col j = 0; j < dim; j++)
-            {
-                dual_v[j] = cost_at(0, j);
-            }
-
-            // Row-major access for cache-friendly matrix reads
-            for (row i = 1; i < dim; i++)
-            {
-                #pragma omp simd
-                for (col j = 0; j < dim; j++)
-                {
-                    cost c = cost_at(i, j);
-                    if (c < dual_v[j])
-                    {
-                        dual_v[j] = c;
-                        min_rows[j] = i;
-                    }
-                }
-            }
-
-            cost current_min_cost = 0;
-
-            // Assign columns backwards to match original LAPJV behavior
-            for (col j = dim; j--;)
-            {
-                row min_row = min_rows[j];
-                current_min_cost = dual_v[j];
-
-                // Track the number of times a row contains the minimum of a column
-                if (++col_match_counts[min_row] == 1)
-                {
-                    // First time we see this row as a minimum, tentatively assign it
-                    row_assignment[min_row] = j;
-                    col_assignment[j] = min_row;
-                }
-                else if (dual_v[j] < dual_v[row_assignment[min_row]])
-                {
-                    // If the row was already assigned, but this column has a lower minimum cost,
-                    // reassign the row to this new column.
-                    int prev_j = row_assignment[min_row];
-                    row_assignment[min_row] = j;
-                    col_assignment[j] = min_row;
-                    col_assignment[prev_j] = -1;
-                }
-                else
-                {
-                    // Otherwise, this column remains unassigned for now.
-                    col_assignment[j] = -1;
-                }
-            }
-            return current_min_cost;
-        };
-
-        cost min_reduced_cost = column_reduction();
-        row num_unassigned_rows = 0;
-        
-        // STEP 2: REDUCTION TRANSFER
-        // Transfer the reduction from rows that have exactly one assigned column.
-        for (row i = 0; i < dim; i++)
+        explicit Context(int d, int r, int c)
+            : dim(d), original_rows(r), original_cols(c),
+              row_assignment(d, 0), col_assignment(d, 0),
+              dual_u(d, 0), dual_v(d, 0),
+              unassigned_rows(d, 0), path_cols(d, 0),
+              col_match_counts(d, 0), shortest_path_costs(d, 0),
+              predecessor_rows(d, 0),
+              min_reduced_cost(0), num_unassigned_rows(0)
         {
-            if (col_match_counts[i] == 0)
+        }
+    };
+
+    static cost cost_at(const Matrix<Data>& m, const Context& ctx, int r, int c)
+    {
+        return r < ctx.original_rows && c < ctx.original_cols ? m(r, c) : 0;
+    }
+
+#ifdef DEBUG
+    __attribute__((noinline))
+#endif
+    void step1_column_reduction(const Matrix<Data>& m, Context& ctx)
+    {
+        std::vector<row> min_rows(ctx.dim, 0);
+
+        for (col j = 0; j < ctx.dim; j++)
+        {
+            ctx.dual_v[j] = cost_at(m, ctx, 0, j);
+        }
+
+        for (row i = 1; i < ctx.dim; i++)
+        {
+#pragma omp simd
+            for (col j = 0; j < ctx.dim; j++)
             {
-                // Row has no assignments
-                unassigned_rows[num_unassigned_rows++] = i;
-            }
-            else if (col_match_counts[i] == 1)
-            {
-                // Row is uniquely assigned to a column
-                col j1 = row_assignment[i];
-                min_reduced_cost = BIG;
-                for (col j = 0; j < dim; j++)
+                cost c = cost_at(m, ctx, i, j);
+                if (c < ctx.dual_v[j])
                 {
-                    if (j != j1)
-                    {
-                        if (cost_at(i, j) - dual_v[j] < min_reduced_cost)
-                        {
-                            min_reduced_cost = cost_at(i, j) - dual_v[j];
-                        }
-                    }
+                    ctx.dual_v[j] = c;
+                    min_rows[j] = i;
                 }
-                dual_v[j1] = dual_v[j1] - min_reduced_cost;
             }
         }
 
-        // STEP 3: AUGMENTING ROW REDUCTION
-        // Further reduce costs by examining unassigned rows.
+        cost current_min_cost = 0;
+        for (col j = ctx.dim; j--;)
+        {
+            row min_row = min_rows[j];
+            current_min_cost = ctx.dual_v[j];
+
+            if (++ctx.col_match_counts[min_row] == 1)
+            {
+                ctx.row_assignment[min_row] = j;
+                ctx.col_assignment[j] = min_row;
+            }
+            else if (ctx.dual_v[j] < ctx.dual_v[ctx.row_assignment[min_row]])
+            {
+                int prev_j = ctx.row_assignment[min_row];
+                ctx.row_assignment[min_row] = j;
+                ctx.col_assignment[j] = min_row;
+                ctx.col_assignment[prev_j] = -1;
+            }
+            else
+            {
+                ctx.col_assignment[j] = -1;
+            }
+        }
+        ctx.min_reduced_cost = current_min_cost;
+    }
+
+#ifdef DEBUG
+    __attribute__((noinline))
+#endif
+    void step2_reduction_transfer(const Matrix<Data>& m, Context& ctx)
+    {
+        ctx.num_unassigned_rows = 0;
+        for (row i = 0; i < ctx.dim; i++)
+        {
+            if (ctx.col_match_counts[i] == 0)
+            {
+                ctx.unassigned_rows[ctx.num_unassigned_rows++] = i;
+            }
+            else if (ctx.col_match_counts[i] == 1)
+            {
+                col j1 = ctx.row_assignment[i];
+                ctx.min_reduced_cost = BIG;
+                for (col j = 0; j < ctx.dim; j++)
+                {
+                    if (j != j1)
+                    {
+                        if (cost_at(m, ctx, i, j) - ctx.dual_v[j] < ctx.min_reduced_cost)
+                        {
+                            ctx.min_reduced_cost = cost_at(m, ctx, i, j) - ctx.dual_v[j];
+                        }
+                    }
+                }
+                ctx.dual_v[j1] = ctx.dual_v[j1] - ctx.min_reduced_cost;
+            }
+        }
+    }
+
+#ifdef DEBUG
+    __attribute__((noinline))
+#endif
+    void step3_augmenting_row_reduction(const Matrix<Data>& m, Context& ctx)
+    {
         int loopcnt = 0;
         do
         {
             loopcnt++;
-
             row k = 0;
-            row prev_num_unassigned = num_unassigned_rows;
-            num_unassigned_rows = 0;
+            row prev_num_unassigned = ctx.num_unassigned_rows;
+            ctx.num_unassigned_rows = 0;
             while (k < prev_num_unassigned)
             {
-                row i = unassigned_rows[k];
+                row i = ctx.unassigned_rows[k];
                 k++;
 
-                // Find the two smallest reduced costs in row i
-                cost min_cost = cost_at(i, 0) - dual_v[0];
+                cost min_cost = cost_at(m, ctx, i, 0) - ctx.dual_v[0];
                 col best_col = 0;
                 cost second_min_cost = BIG;
                 col second_best_col = 0;
-                
-                for (col j = 1; j < dim; j++)
+
+                for (col j = 1; j < ctx.dim; j++)
                 {
-                    cost reduced_cost = cost_at(i, j) - dual_v[j];
+                    cost reduced_cost = cost_at(m, ctx, i, j) - ctx.dual_v[j];
                     if (reduced_cost < second_min_cost)
                     {
                         if (reduced_cost >= min_cost)
@@ -200,51 +216,50 @@ public:
                     }
                 }
 
-                row previously_assigned_row = col_assignment[best_col];
+                row previously_assigned_row = ctx.col_assignment[best_col];
                 if (second_min_cost - min_cost > EPSILON)
                 {
-                    dual_v[best_col] = dual_v[best_col] - (second_min_cost - min_cost);
+                    ctx.dual_v[best_col] = ctx.dual_v[best_col] - (second_min_cost - min_cost);
                 }
                 else if (previously_assigned_row > -1)
                 {
                     best_col = second_best_col;
-                    previously_assigned_row = col_assignment[second_best_col];
+                    previously_assigned_row = ctx.col_assignment[second_best_col];
                 }
 
-                // Assign row i to the best column found
-                row_assignment[i] = best_col;
-                col_assignment[best_col] = i;
+                ctx.row_assignment[i] = best_col;
+                ctx.col_assignment[best_col] = i;
 
                 if (previously_assigned_row > -1)
                 {
-                    // The column was already assigned to another row.
-                    // We displaced it, so add the displaced row back to the unassigned list.
                     if (second_min_cost - min_cost > EPSILON)
                     {
-                        unassigned_rows[--k] = previously_assigned_row;
+                        ctx.unassigned_rows[--k] = previously_assigned_row;
                     }
                     else
                     {
-                        unassigned_rows[num_unassigned_rows++] = previously_assigned_row;
+                        ctx.unassigned_rows[ctx.num_unassigned_rows++] = previously_assigned_row;
                     }
                 }
             }
         }
         while (loopcnt < 2);
+    }
 
-        // STEP 4: AUGMENT SOLUTION
-        // For each remaining unassigned row, find an augmenting path to increase assignments.
-        // This is effectively Dijkstra's algorithm for finding the shortest alternating path.
-        for (row f = 0; f < num_unassigned_rows; f++)
+#ifdef DEBUG
+    __attribute__((noinline))
+#endif
+    void step4_augment_solution(const Matrix<Data>& m, Context& ctx)
+    {
+        for (row f = 0; f < ctx.num_unassigned_rows; f++)
         {
-            row current_free_row = unassigned_rows[f];
+            row current_free_row = ctx.unassigned_rows[f];
 
-            // Initialize shortest path costs
-            for (col j = 0; j < dim; j++)
+            for (col j = 0; j < ctx.dim; j++)
             {
-                shortest_path_costs[j] = cost_at(current_free_row, j) - dual_v[j];
-                predecessor_rows[j] = current_free_row;
-                path_cols[j] = j;
+                ctx.shortest_path_costs[j] = cost_at(m, ctx, current_free_row, j) - ctx.dual_v[j];
+                ctx.predecessor_rows[j] = current_free_row;
+                ctx.path_cols[j] = j;
             }
 
             col search_head = 0;
@@ -259,27 +274,27 @@ public:
                 {
                     last_processed = search_head - 1;
 
-                    min_reduced_cost = shortest_path_costs[path_cols[search_tail++]];
-                    for (col k = search_tail; k < dim; k++)
+                    ctx.min_reduced_cost = ctx.shortest_path_costs[ctx.path_cols[search_tail++]];
+                    for (col k = search_tail; k < ctx.dim; k++)
                     {
-                        col j = path_cols[k];
-                        cost current_cost = shortest_path_costs[j];
-                        if (current_cost <= min_reduced_cost + EPSILON)
+                        col j = ctx.path_cols[k];
+                        cost current_cost = ctx.shortest_path_costs[j];
+                        if (current_cost <= ctx.min_reduced_cost + EPSILON)
                         {
-                            if (current_cost < min_reduced_cost - EPSILON)
+                            if (current_cost < ctx.min_reduced_cost - EPSILON)
                             {
                                 search_tail = search_head;
-                                min_reduced_cost = current_cost;
+                                ctx.min_reduced_cost = current_cost;
                             }
-                            path_cols[k] = path_cols[search_tail];
-                            path_cols[search_tail++] = j;
+                            ctx.path_cols[k] = ctx.path_cols[search_tail];
+                            ctx.path_cols[search_tail++] = j;
                         }
                     }
                     for (col k = search_head; k < search_tail; k++)
                     {
-                        if (col_assignment[path_cols[k]] < 0)
+                        if (ctx.col_assignment[ctx.path_cols[k]] < 0)
                         {
-                            end_of_path = path_cols[k];
+                            end_of_path = ctx.path_cols[k];
                             unassigned_found = true;
                             break;
                         }
@@ -288,21 +303,22 @@ public:
 
                 if (!unassigned_found)
                 {
-                    col next_col_to_process = path_cols[search_head];
+                    col next_col_to_process = ctx.path_cols[search_head];
                     search_head++;
-                    row assigned_row = col_assignment[next_col_to_process];
-                    cost current_cost_margin = cost_at(assigned_row, next_col_to_process) - dual_v[next_col_to_process] - min_reduced_cost;
+                    row assigned_row = ctx.col_assignment[next_col_to_process];
+                    cost current_cost_margin = cost_at(m, ctx, assigned_row, next_col_to_process) - ctx.dual_v[
+                        next_col_to_process] - ctx.min_reduced_cost;
 
-                    for (col k = search_tail; k < dim; k++)
+                    for (col k = search_tail; k < ctx.dim; k++)
                     {
-                        col j = path_cols[k];
-                        cost new_cost = cost_at(assigned_row, j) - dual_v[j] - current_cost_margin;
-                        if (new_cost < shortest_path_costs[j])
+                        col j = ctx.path_cols[k];
+                        cost new_cost = cost_at(m, ctx, assigned_row, j) - ctx.dual_v[j] - current_cost_margin;
+                        if (new_cost < ctx.shortest_path_costs[j])
                         {
-                            predecessor_rows[j] = assigned_row;
-                            if (std::abs(new_cost - min_reduced_cost) <= EPSILON)
+                            ctx.predecessor_rows[j] = assigned_row;
+                            if (std::abs(new_cost - ctx.min_reduced_cost) <= EPSILON)
                             {
-                                if (col_assignment[j] < 0)
+                                if (ctx.col_assignment[j] < 0)
                                 {
                                     end_of_path = j;
                                     unassigned_found = true;
@@ -310,53 +326,55 @@ public:
                                 }
                                 else
                                 {
-                                    path_cols[k] = path_cols[search_tail];
-                                    path_cols[search_tail++] = j;
+                                    ctx.path_cols[k] = ctx.path_cols[search_tail];
+                                    ctx.path_cols[search_tail++] = j;
                                 }
                             }
-                            shortest_path_costs[j] = new_cost;
+                            ctx.shortest_path_costs[j] = new_cost;
                         }
                     }
                 }
             }
             while (!unassigned_found);
 
-            // Update dual variables along the alternating path
             for (col k = last_processed + 1; k--;)
             {
-                col j1 = path_cols[k];
-                dual_v[j1] = dual_v[j1] + shortest_path_costs[j1] - min_reduced_cost;
+                col j1 = ctx.path_cols[k];
+                ctx.dual_v[j1] = ctx.dual_v[j1] + ctx.shortest_path_costs[j1] - ctx.min_reduced_cost;
             }
 
-            // Augment the current matching
             row i;
             col j1;
             do
             {
-                i = predecessor_rows[end_of_path];
-                col_assignment[end_of_path] = i;
+                i = ctx.predecessor_rows[end_of_path];
+                ctx.col_assignment[end_of_path] = i;
                 j1 = end_of_path;
-                end_of_path = row_assignment[i];
-                row_assignment[i] = j1;
+                end_of_path = ctx.row_assignment[i];
+                ctx.row_assignment[i] = j1;
             }
             while (i != current_free_row);
         }
+    }
 
-        // STEP 5: CALCULATE OPTIMAL COST & FINALIZE
+#ifdef DEBUG
+    __attribute__((noinline))
+#endif
+    void step5_calculate_optimal_cost_and_finalize(Matrix<Data>& m, Context& ctx)
+    {
         cost lapcost = 0;
-        for (row i = 0; i < dim; i++)
+        for (row i = 0; i < ctx.dim; i++)
         {
-            col j = row_assignment[i];
-            dual_u[i] = cost_at(i, j) - dual_v[j];
-            lapcost = lapcost + cost_at(i, j);
+            col j = ctx.row_assignment[i];
+            ctx.dual_u[i] = cost_at(m, ctx, i, j) - ctx.dual_v[j];
+            lapcost = lapcost + cost_at(m, ctx, i, j);
         }
 
-        // Write assignments back into the input matrix
         for (size_t r = 0; r < m.rows(); ++r)
         {
             for (size_t c = 0; c < m.columns(); ++c)
             {
-                if (row_assignment[r] == (col)c)
+                if (ctx.row_assignment[r] == (col)c)
                 {
                     m(r, c) = 0.0;
                 }
@@ -367,8 +385,6 @@ public:
             }
         }
     }
-
-private:
 };
 
 #endif /* !defined(_LAPJV_H_) */
