@@ -89,7 +89,7 @@ private:
 
     static cost cost_at(const Matrix<Data>& m, const Context& ctx, int r, int c)
     {
-        if (__builtin_expect(r < ctx.original_rows && c < ctx.original_cols, 1)) {
+        if (r < ctx.original_rows && c < ctx.original_cols) [[likely]] {
             return ctx.m_data[r * ctx.original_cols + c];
         }
         return 0;
@@ -100,8 +100,11 @@ private:
 #endif
     void step1_column_reduction(const Matrix<Data>& m, Context& ctx)
     {
+        // row with the min given a column
         std::vector<row> min_rows(ctx.dim, 0);
 
+        // find mins for columns
+#pragma omp simd
         for (col j = 0; j < ctx.dim; j++)
         {
             ctx.dual_v[j] = cost_at(m, ctx, 0, j);
@@ -120,13 +123,22 @@ private:
                 }
             }
         }
+        step1_2_partial_assignment(ctx, min_rows);
+    }
 
+
+#ifdef DEBUG
+    __attribute__((noinline))
+#endif
+    void step1_2_partial_assignment(Context& ctx, const std::vector<row>& min_rows)
+    {
         cost current_min_cost = 0;
         for (col j = ctx.dim; j--;)
         {
             row min_row = min_rows[j];
             current_min_cost = ctx.dual_v[j];
 
+            // increment and assign
             if (++ctx.col_match_counts[min_row] == 1)
             {
                 ctx.row_assignment[min_row] = j;
@@ -134,6 +146,7 @@ private:
             }
             else if (ctx.dual_v[j] < ctx.dual_v[ctx.row_assignment[min_row]])
             {
+                // replace if cheaper
                 int prev_j = ctx.row_assignment[min_row];
                 ctx.row_assignment[min_row] = j;
                 ctx.col_assignment[j] = min_row;
@@ -141,6 +154,7 @@ private:
             }
             else
             {
+                // worse option, leave unassigned
                 ctx.col_assignment[j] = -1;
             }
         }
@@ -152,6 +166,7 @@ private:
 #endif
     void step2_reduction_transfer(const Matrix<Data>& m, Context& ctx)
     {
+        // count assignments and increase their margin of selection
         ctx.num_unassigned_rows = 0;
         for (row i = 0; i < ctx.dim; i++)
         {
@@ -165,15 +180,13 @@ private:
                 ctx.min_reduced_cost = BIG;
                 for (col j = 0; j < ctx.dim; j++)
                 {
-                    if (j != j1)
+                    if (j != j1 && cost_at(m, ctx, i, j) - ctx.dual_v[j] < ctx.min_reduced_cost)
                     {
-                        if (cost_at(m, ctx, i, j) - ctx.dual_v[j] < ctx.min_reduced_cost)
-                        {
-                            ctx.min_reduced_cost = cost_at(m, ctx, i, j) - ctx.dual_v[j];
-                        }
+                        ctx.min_reduced_cost = cost_at(m, ctx, i, j) - ctx.dual_v[j];
                     }
                 }
-                ctx.dual_v[j1] = ctx.dual_v[j1] - ctx.min_reduced_cost;
+                // reduce the price by the diff w the 2nd cheapest to make it harder to change
+                ctx.dual_v[j1] -= ctx.min_reduced_cost;
             }
         }
     }
@@ -378,7 +391,7 @@ private:
         {
             for (size_t c = 0; c < m.columns(); ++c)
             {
-                if (ctx.row_assignment[r] == (col)c)
+                if (ctx.row_assignment[r] == static_cast<col>(c))
                 {
                     m(r, c) = 0.0;
                 }
