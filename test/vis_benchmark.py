@@ -2,6 +2,8 @@ import json
 import sys
 import re
 from datetime import datetime
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import os
@@ -32,7 +34,7 @@ def parse_benchmark_data(json_path):
 
         # Handle Big-O and RMS summary rows
         if "_BigO" in name:
-            big_o_stats[dtype] = b.get("complexity", "Unknown")
+            big_o_stats[dtype] = b.get("big_o", "Unknown")
             continue
         if "_RMS" in name:
             continue

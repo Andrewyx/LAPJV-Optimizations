@@ -26,7 +26,7 @@
 #include <cmath>
 #include <vector>
 
-/*************** TYPES      *******************/
+#include "hwy/highway.h"
 
 typedef int row;
 typedef int col;
@@ -135,23 +135,57 @@ private:
 #endif
     void step1_column_reduction(const Matrix<Data>& m, Context& ctx)
     {
-        // find mins for columns
-#pragma omp simd
+        namespace hn = hwy::HWY_NAMESPACE;
+        hn::ScalableTag<Data> d;
+        size_t lanes = hn::Lanes(d);
+
         for (col j = 0; j < ctx.dim; j++)
         {
             ctx.dual_v[j] = cost_at(m, ctx, 0, j);
+            ctx.min_rows[j] = 0;
         }
 
         for (row i = 1; i < ctx.dim; i++)
         {
-#pragma omp simd
-            for (col j = 0; j < ctx.dim; j++)
-            {
-                cost c = cost_at(m, ctx, i, j);
-                if (c < ctx.dual_v[j])
+            if (ctx.is_square) {
+                const Data* __restrict__ row_ptr = &ctx.m_data[i * ctx.dim];
+                col j = 0;
+                for (; j + lanes <= static_cast<size_t>(ctx.dim); j += lanes)
                 {
-                    ctx.dual_v[j] = c;
-                    ctx.min_rows[j] = i;
+                    auto c_vec = hn::LoadU(d, row_ptr + j);
+                    auto dual_vec = hn::LoadU(d, ctx.dual_v + j);
+                    auto mask = hn::Lt(c_vec, dual_vec);
+                    
+                    auto new_dual = hn::IfThenElse(mask, c_vec, dual_vec);
+                    hn::StoreU(new_dual, d, ctx.dual_v + j);
+                    
+                    uint8_t bits[8] = {0};
+                    hn::StoreMaskBits(d, mask, bits);
+                    uint64_t mask_bits = *reinterpret_cast<uint64_t*>(bits);
+                    while (mask_bits) {
+                        size_t lane = __builtin_ctzll(mask_bits);
+                        ctx.min_rows[j + lane] = i;
+                        mask_bits &= mask_bits - 1;
+                    }
+                }
+                for (; j < ctx.dim; j++)
+                {
+                    cost c = row_ptr[j];
+                    if (c < ctx.dual_v[j])
+                    {
+                        ctx.dual_v[j] = c;
+                        ctx.min_rows[j] = i;
+                    }
+                }
+            } else {
+                for (col j = 0; j < ctx.dim; j++)
+                {
+                    cost c = cost_at(m, ctx, i, j);
+                    if (c < ctx.dual_v[j])
+                    {
+                        ctx.dual_v[j] = c;
+                        ctx.min_rows[j] = i;
+                    }
                 }
             }
         }
@@ -249,23 +283,30 @@ private:
                 cost second_min_cost = BIG;
                 col second_best_col = 0;
 
-                for (col j = 1; j < ctx.dim; j++)
-                {
-                    cost reduced_cost = cost_at(m, ctx, i, j) - ctx.dual_v[j];
-                    if (reduced_cost < second_min_cost)
+                if (ctx.is_square) {
+                    const Data* __restrict__ row_ptr = &ctx.m_data[i * ctx.dim];
+                    for (col j = 1; j < ctx.dim; j++)
                     {
-                        if (reduced_cost >= min_cost)
-                        {
-                            second_min_cost = reduced_cost;
-                            second_best_col = j;
-                        }
-                        else
-                        {
-                            second_min_cost = min_cost;
-                            min_cost = reduced_cost;
-                            second_best_col = best_col;
-                            best_col = j;
-                        }
+                        cost reduced_cost = row_ptr[j] - ctx.dual_v[j];
+                        bool is_new_min = reduced_cost < min_cost;
+                        bool is_new_second = reduced_cost < second_min_cost && !is_new_min;
+
+                        second_min_cost = is_new_min ? min_cost : (is_new_second ? reduced_cost : second_min_cost);
+                        second_best_col = is_new_min ? best_col : (is_new_second ? j : second_best_col);
+                        min_cost = is_new_min ? reduced_cost : min_cost;
+                        best_col = is_new_min ? j : best_col;
+                    }
+                } else {
+                    for (col j = 1; j < ctx.dim; j++)
+                    {
+                        cost reduced_cost = cost_at(m, ctx, i, j) - ctx.dual_v[j];
+                        bool is_new_min = reduced_cost < min_cost;
+                        bool is_new_second = reduced_cost < second_min_cost && !is_new_min;
+
+                        second_min_cost = is_new_min ? min_cost : (is_new_second ? reduced_cost : second_min_cost);
+                        second_best_col = is_new_min ? best_col : (is_new_second ? j : second_best_col);
+                        min_cost = is_new_min ? reduced_cost : min_cost;
+                        best_col = is_new_min ? j : best_col;
                     }
                 }
 

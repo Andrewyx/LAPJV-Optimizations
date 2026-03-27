@@ -9,3 +9,5 @@ pip.parse(
     requirements_lock = "//:requirements.txt",
 )
 use_repo(pip, "pip")
+
+bazel_dep(name = "highway", version = "1.2.0")

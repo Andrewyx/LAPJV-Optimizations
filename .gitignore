@@ -2,9 +2,8 @@
 reports/*
 results/*
 results.json
-perf.data
-perf.data.old
-flamegraph.svg
+flamegraph/perf.data
+flamegraph/perf.data.old
 
 # Virtual environment
 .venv/
